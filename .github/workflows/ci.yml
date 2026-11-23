@@ -62,3 +62,43 @@ jobs:
       with:
         name: docker-scout-findings
         path: scout-report.sarif
+
+  dast_scan:
+    name: Run DAST Scan (OWASP ZAP)
+    runs-on: ubuntu-latest
+    needs: [sast_scan, image_scan]
+    # sast_scan and image_scan are EXPECTED to fail (they report vulnerabilities).
+    # Without this condition, dast_scan would be skipped whenever they fail.
+    if: ${{ always() }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Deploy PyGoat
+      run: |
+        docker pull pygoat/pygoat:latest
+        docker run --rm -d --name pygoat -p 8000:8000 pygoat/pygoat:latest
+
+    - name: Wait until PyGoat is up
+      run: |
+        for i in $(seq 1 60); do
+          if curl -s -L -o /dev/null -w "%{http_code}" http://localhost:8000/ | grep -q "200"; then
+            echo "PyGoat is ready after ~$((i*5))s"; exit 0
+          fi
+          echo "Waiting for PyGoat ($i/60)..."; sleep 5
+        done
+        echo "PyGoat did not start"; docker logs pygoat; exit 1
+
+    - name: ZAP Baseline Scan
+      uses: zaproxy/action-baseline@v0.14.0
+      with:
+        target: 'http://localhost:8000'
+        allow_issue_writing: false
+        fail_action: false
+        artifact_name: zap-report
+        cmd_options: '-a'   # include alpha passive rules
+
+    - name: Stop PyGoat
+      if: always()
+      run: docker stop pygoat || true
